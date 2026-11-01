@@ -3,12 +3,15 @@ package com.vibe.launcher
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.drawable.Drawable
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
-import androidx.compose.animation.Crossfade
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -21,19 +24,20 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import kotlinx.coroutines.delay
@@ -48,13 +52,43 @@ val HIDDEN = setOf(
     "com.mitv.tvhome.mitvplus",
 )
 
-data class AppItem(val pkg: String, val label: String, val intent: Intent, val image: Bitmap)
+data class AppItem(
+    val pkg: String,
+    val label: String,
+    val intent: Intent,
+    val image: Bitmap,
+    val accent: Color,
+)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent { HomeScreen() }
     }
+}
+
+private fun accentOf(bmp: Bitmap): Color {
+    val px = Bitmap.createScaledBitmap(bmp, 1, 1, true).getPixel(0, 0)
+    return Color(px).copy(alpha = 1f)
+}
+
+/** Banner ho to wahi, warna icon ko 16:9 tile par center karke banata hai. */
+private fun tileFor(d: Drawable, isBanner: Boolean): Pair<Bitmap, Color> {
+    val w = 480; val h = 270
+    val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+    val c = Canvas(out)
+    if (isBanner) {
+        d.setBounds(0, 0, w, h); d.draw(c)
+        return out to accentOf(out)
+    }
+    val iconBmp = Bitmap.createBitmap(128, 128, Bitmap.Config.ARGB_8888)
+    d.setBounds(0, 0, 128, 128); d.draw(Canvas(iconBmp))
+    val accent = accentOf(iconBmp)
+    val base = lerp(Color(0xFF15151C), accent, 0.35f)
+    c.drawColor(base.toArgb())
+    val s = 150
+    d.setBounds((w - s) / 2, (h - s) / 2, (w + s) / 2, (h + s) / 2); d.draw(c)
+    return out to accent
 }
 
 fun loadApps(ctx: Context): List<AppItem> {
@@ -68,12 +102,13 @@ fun loadApps(ctx: Context): List<AppItem> {
         .distinctBy { it.activityInfo.packageName }
         .map { ri ->
             val pkg = ri.activityInfo.packageName
-            val img = (ri.activityInfo.loadBanner(pm) ?: ri.loadIcon(pm)).toBitmap(320, 180)
+            val banner = ri.activityInfo.loadBanner(pm)
+            val (img, accent) = tileFor(banner ?: ri.loadIcon(pm), banner != null)
             AppItem(
                 pkg, ri.loadLabel(pm).toString(),
                 pm.getLeanbackLaunchIntentForPackage(pkg) ?: pm.getLaunchIntentForPackage(pkg)
                     ?: Intent(Intent.ACTION_MAIN).setClassName(pkg, ri.activityInfo.name),
-                img
+                img, accent
             )
         }
         .sortedBy { it.label.lowercase() }
@@ -86,48 +121,77 @@ fun HomeScreen() {
     var focused by remember { mutableIntStateOf(0) }
 
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { apps = loadApps(ctx) }
-    BackHandler { /* launcher kabhi band nahi hona chahiye */ }
+    BackHandler { }
 
-    val clock by produceState("") {
+    val time by produceState("") {
         while (true) {
-            value = SimpleDateFormat("EEE, d MMM  •  h:mm a", Locale.getDefault()).format(Date())
-            delay(15_000)
+            value = SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date())
+            delay(10_000)
         }
     }
-    val current = apps.getOrNull(focused)
-
-    Box(Modifier.fillMaxSize().background(Color(0xFF0B0B10))) {
-        // Dynamic blurred background: focused app ki image
-        Crossfade(current, label = "bg") { app ->
-            if (app != null) {
-                Image(
-                    app.image.asImageBitmap(), null,
-                    modifier = Modifier.fillMaxSize().blur(60.dp),
-                    contentScale = ContentScale.Crop
-                )
-            }
+    val date by produceState("") {
+        while (true) {
+            value = SimpleDateFormat("EEEE, d MMMM", Locale.getDefault()).format(Date())
+            delay(60_000)
         }
+    }
+
+    val current = apps.getOrNull(focused)
+    val accent by animateColorAsState(
+        current?.accent ?: Color(0xFF2A2A40), tween(600), label = "accent"
+    )
+    val top = lerp(Color(0xFF0A0A0F), accent, 0.55f)
+    val bottom = Color(0xFF050508)
+
+    Box(
+        Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(top, bottom)))
+    ) {
+        // Soft glow, top-left se
         Box(
             Modifier.fillMaxSize().background(
-                Brush.verticalGradient(listOf(Color(0x99000000), Color(0xCC000000), Color(0xF0000000)))
+                Brush.radialGradient(
+                    listOf(accent.copy(alpha = 0.35f), Color.Transparent),
+                    center = androidx.compose.ui.geometry.Offset(300f, 200f),
+                    radius = 1400f
+                )
             )
         )
 
-        Column(Modifier.fillMaxSize().padding(horizontal = 56.dp, vertical = 32.dp)) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                Text(clock, color = Color.White.copy(alpha = 0.8f), fontSize = 20.sp)
+        Column(Modifier.fillMaxSize().padding(top = 40.dp, bottom = 36.dp)) {
+            // Top bar
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 72.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Home", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.weight(1f))
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(time, color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.Medium)
+                    Text(date, color = Color.White.copy(alpha = 0.65f), fontSize = 15.sp)
+                }
             }
+
             Spacer(Modifier.weight(1f))
-            Text(
-                current?.label ?: "", color = Color.White,
-                fontSize = 56.sp, fontWeight = FontWeight.Bold
-            )
-            Text("Press OK to open", color = Color.White.copy(alpha = 0.6f), fontSize = 18.sp)
+
+            // Hero
+            Column(Modifier.padding(horizontal = 72.dp)) {
+                Text(
+                    current?.label ?: "",
+                    color = Color.White, fontSize = 52.sp, fontWeight = FontWeight.Bold,
+                    maxLines = 1
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Press OK to open",
+                    color = Color.White.copy(alpha = 0.6f), fontSize = 17.sp
+                )
+            }
+
             Spacer(Modifier.height(28.dp))
 
             LazyRow(
-                horizontalArrangement = Arrangement.spacedBy(20.dp),
-                contentPadding = PaddingValues(vertical = 20.dp)
+                horizontalArrangement = Arrangement.spacedBy(24.dp),
+                contentPadding = PaddingValues(horizontal = 72.dp, vertical = 24.dp)
             ) {
                 itemsIndexed(apps, key = { _, a -> a.pkg }) { index, app ->
                     AppCard(app, onFocus = { focused = index }) {
@@ -135,26 +199,28 @@ fun HomeScreen() {
                     }
                 }
             }
-            Spacer(Modifier.height(24.dp))
         }
     }
 }
 
+
 @Composable
 fun AppCard(app: AppItem, onFocus: () -> Unit, onClick: () -> Unit) {
     var isFocused by remember { mutableStateOf(false) }
-    val scale by animateFloatAsState(if (isFocused) 1.15f else 1f, label = "scale")
-    val shape = RoundedCornerShape(16.dp)
+    val scale by animateFloatAsState(if (isFocused) 1.12f else 1f, tween(180), label = "scale")
+    val dim by animateFloatAsState(if (isFocused) 1f else 0.72f, tween(180), label = "dim")
+    val shape = RoundedCornerShape(18.dp)
     Image(
         app.image.asImageBitmap(), app.label,
         modifier = Modifier
-            .size(width = 200.dp, height = 112.dp)
+            .size(width = 224.dp, height = 126.dp)
             .scale(scale)
+            .shadow(if (isFocused) 24.dp else 0.dp, shape, ambientColor = app.accent, spotColor = app.accent)
             .clip(shape)
-            .background(Color(0xFF1C1C24))
             .border(if (isFocused) 3.dp else 0.dp, Color.White, shape)
             .onFocusChanged { isFocused = it.isFocused; if (it.isFocused) onFocus() }
             .clickable(onClick = onClick),
-        contentScale = ContentScale.Fit
+        contentScale = ContentScale.Crop,
+        alpha = dim
     )
 }
